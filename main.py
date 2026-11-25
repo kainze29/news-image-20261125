@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Entry for make.fun news-image-20261125.
+"""Publish the 25 November 2026 front page for make.fun.
 
-The repository ships the finished front page for Wednesday 25 November
-2026 as news.jpg: six photo stories, a numbered brief of 45 more
-stories, and a map of where it happened. This program copies those
-bytes to the grader's output directory as entry.png. It runs with no
-network and no randomness, so two runs write the same bytes. It only
-writes entry.png inside the output directory and never removes or
-replaces that directory.
+The finished page lives in this repository as news.jpg. It shows six
+photo stories from Wednesday 25 November 2026, a numbered brief of 45
+more stories from the same day, and a world map of where they happened.
+This script only copies that file into the grader's output directory
+under the name entry.png, after checking it fits the competition's
+limits. No network, no clock, no randomness: running it twice writes
+identical bytes.
 """
 
 import hashlib
@@ -15,58 +15,57 @@ import os
 import sys
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent
-IMAGE = HERE / "news.jpg"
-TARGET = "entry.png"
-JPEG_START = b"\xff\xd8\xff"
-JPEG_END = b"\xff\xd9"
-MAX_BYTES = 1_048_576
-MAX_SIDE = 1024
-SOF_MARKERS = {0xC0, 0xC1, 0xC2}
+SOURCE = Path(__file__).resolve().parent / "news.jpg"
+OUTPUT_NAME = "entry.png"
+BYTE_LIMIT = 1_048_576
+EDGE_LIMIT = 1024
+SOI = b"\xff\xd8"
+EOI = b"\xff\xd9"
+FRAME_MARKERS = frozenset((0xC0, 0xC1, 0xC2))
 
 
-def dimensions(data):
-    """Read the image size from the first SOF marker in the JPEG."""
+def jpeg_size(blob):
+    """Return (width, height) by walking the JPEG segment headers."""
+    if blob[:2] != SOI:
+        sys.exit("news.jpg is not a JPEG (missing SOI marker)")
     pos = 2
-    while pos + 9 <= len(data):
-        if data[pos] != 0xFF:
-            sys.exit("news.jpg: corrupt JPEG marker scan")
-        marker = data[pos + 1]
-        if marker in SOF_MARKERS:
-            height = int.from_bytes(data[pos + 5:pos + 7], "big")
-            width = int.from_bytes(data[pos + 7:pos + 9], "big")
+    while pos + 9 <= len(blob):
+        if blob[pos] != 0xFF:
+            sys.exit("news.jpg has a broken marker at offset %d" % pos)
+        # Fill bytes (extra 0xFF) are legal padding between segments.
+        while blob[pos + 1] == 0xFF:
+            pos += 1
+        marker = blob[pos + 1]
+        if marker in FRAME_MARKERS:
+            height = (blob[pos + 5] << 8) | blob[pos + 6]
+            width = (blob[pos + 7] << 8) | blob[pos + 8]
             return width, height
         if marker == 0xD8 or marker == 0xD9 or 0xD0 <= marker <= 0xD7:
             pos += 2
             continue
-        size = int.from_bytes(data[pos + 2:pos + 4], "big")
-        if size < 2:
-            sys.exit("news.jpg: corrupt JPEG segment size")
-        pos += 2 + size
-    sys.exit("news.jpg: no SOF marker found")
+        seg_len = (blob[pos + 2] << 8) | blob[pos + 3]
+        if seg_len < 2:
+            sys.exit("news.jpg has a bad segment length at offset %d" % pos)
+        pos += 2 + seg_len
+    sys.exit("news.jpg carries no frame marker, so its size is unknown")
 
 
-def main():
-    # Pure copy: no network, no randomness, no clock reads, so the two
-    # grader runs write the same bytes. Verified locally 25 Nov 2026:
-    # two runs to separate dirs produced identical sha256 digests.
-    data = IMAGE.read_bytes()
-    if len(data) > MAX_BYTES:
-        sys.exit(f"news.jpg: {len(data)} bytes, over the 1 MiB limit")
-    if data[:3] != JPEG_START:
-        sys.exit("news.jpg: missing JPEG start marker")
-    if data[-2:] != JPEG_END:
-        sys.exit("news.jpg: missing JPEG end marker")
-    width, height = dimensions(data)
-    if width > MAX_SIDE or height > MAX_SIDE:
-        sys.exit(f"news.jpg: {width}x{height} pixels, over the 1024 limit")
+def run():
+    blob = SOURCE.read_bytes()
+    if len(blob) > BYTE_LIMIT:
+        sys.exit("news.jpg is %d bytes, over the 1 MiB limit" % len(blob))
+    if blob[-2:] != EOI:
+        sys.exit("news.jpg is truncated (missing EOI marker)")
+    width, height = jpeg_size(blob)
+    if width > EDGE_LIMIT or height > EDGE_LIMIT:
+        sys.exit("news.jpg is %dx%d, over the 1024-pixel limit" % (width, height))
     out_dir = Path(os.environ.get("MAKEFUN_OUTPUT_DIR", "/output"))
     out_dir.mkdir(parents=True, exist_ok=True)
-    target = out_dir / TARGET
-    target.write_bytes(data)
-    digest = hashlib.sha256(data).hexdigest()
-    print(f"{target}: {len(data)} bytes, {width}x{height}, sha256 {digest}")
+    dest = out_dir / OUTPUT_NAME
+    dest.write_bytes(blob)
+    digest = hashlib.sha256(blob).hexdigest()
+    print("wrote %s (%d bytes, %dx%d, sha256=%s)" % (dest, len(blob), width, height, digest))
 
 
 if __name__ == "__main__":
-    main()
+    run()
